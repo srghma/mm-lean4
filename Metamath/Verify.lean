@@ -1,5 +1,6 @@
 import Std.Data.HashMap
 import Std.Data.HashSet
+import Std.Data.ByteSlice
 
 
 def UInt8.toChar (n : UInt8) : Char := ⟨n.toUInt32, by
@@ -40,19 +41,6 @@ end ByteSliceT
 
 def ByteArray.toSliceT (arr : ByteArray) : ByteSliceT := ⟨arr, 0⟩
 
-structure ByteSlice where
-  arr : ByteArray
-  off : Nat
-  len : Nat
-
-namespace ByteSlice
-
-def toArray : ByteSlice → ByteArray
-  | ⟨arr, off, len⟩ => arr.extract off len
-
-instance : GetElem ByteSlice Nat UInt8 fun _ _ => True where
-  getElem self idx _ := self.arr[self.off + idx]!
-
 def forIn.loop [Monad m] (f : UInt8 → β → m (ForInStep β))
     (arr : ByteArray) (off stop : Nat) (i : Nat) (b : β) : m β := do
   if i < stop then
@@ -62,29 +50,33 @@ def forIn.loop [Monad m] (f : UInt8 → β → m (ForInStep β))
   else pure b
 
 instance : ForIn m ByteSlice UInt8 :=
-  ⟨fun ⟨arr, off, len⟩ b f => forIn.loop f arr off (off + len) off b⟩
-
-end ByteSlice
+  ⟨fun bs init f => forIn.loop f bs.byteArray bs.start bs.stop bs.start init⟩
 
 def ByteSliceT.toSlice : ByteSliceT → ByteSlice
-  | ⟨arr, off⟩ => ⟨arr, off, arr.size - off⟩
-
-def ByteArray.toSlice (arr : ByteArray) : ByteSlice := ⟨arr, 0, arr.size⟩
+  | ⟨arr, off⟩ => arr.toByteSlice off
 
 def ByteSlice.eqArray (bs : ByteSlice) (arr : ByteArray) : Bool :=
-  let rec loop (arr₁ : ByteArray) (i j : Nat) : Bool :=
-    if j < arr.size then
-      arr₁[i]! == arr[j]! && loop arr₁ (i+1) (j+1)
-    else true
-  bs.len == arr.size && loop bs.arr bs.off 0
+  if h₀ : bs.size = arr.size then
+    let rec go (i : Nat) : Bool :=
+      if h : i < bs.size then
+        have h' : i < arr.size := by rw [←h₀]; exact h
+        if bs[i] = arr[i]'h' then
+          go (i + 1)
+        else
+          false
+      else
+        true
+    go 0
+  else
+    false
 
 def String.toAscii (s : String) : ByteArray :=
-  let rec loop (out : ByteArray) (p : Pos) : ByteArray :=
-    if h : s.atEnd p then out else
-      let c := s.get p
-      have := Nat.sub_lt_sub_left (Nat.gt_of_not_le (mt decide_eq_true h)) (lt_next s _)
-      loop (out.push c.toUInt8) (s.next p)
-  termination_by s.endPos.1 - p.1
+  let rec loop (out : ByteArray) (p : Pos.Raw) : ByteArray :=
+    if h : Pos.Raw.atEnd s p then out else
+      let c := Pos.Raw.get s p
+      have := Nat.sub_lt_sub_left (Nat.gt_of_not_le (mt decide_eq_true h)) (String.Pos.Raw.byteIdx_lt_byteIdx_next s _)
+      loop (out.push c.toUInt8) (Pos.Raw.next s p)
+  termination_by s.rawEndPos.1 - p.1
   loop ByteArray.empty 0
 
 def ByteSlice.toString (bs : ByteSlice) : String := Id.run do
@@ -620,14 +612,18 @@ def feedToken (s : ParserState) (pos : Nat) (tk : ByteSlice) : ParserState :=
     match p with
     | .comment _ => unreachable!
     | .start =>
-      if tk.len == 2 && tk[0] == '$'.toUInt8 then
-        match tk[1].toChar with
-        | '{' => s.withDB .pushScope
-        | '}' => s.withDB (.popScope pos)
-        | 'c' => { s with tokp := .const }
-        | 'v' => { s with tokp := .var }
-        | 'd' => { s with tokp := .djvars #[] }
-        | _ => s.label pos tk
+      if h : tk.size = 2 then
+        have h0 : 0 < tk.size := by rw [h]; decide
+        have h1 : 1 < tk.size := by rw [h]; decide
+        if tk[0]'h0 == '$'.toUInt8 then
+            match (tk[1]'h1).toChar with
+          | '{' => s.withDB .pushScope
+          | '}' => s.withDB (.popScope pos)
+          | 'c' => { s with tokp := .const }
+          | 'v' => { s with tokp := .var }
+          | 'd' => { s with tokp := .djvars #[] }
+          | _ => s.label pos tk
+        else s.label pos tk
       else s.label pos tk
     | .const => s.sym pos tk .const
     | .var => s.sym pos tk .var
@@ -653,15 +649,19 @@ def feedToken (s : ParserState) (pos : Nat) (tk : ByteSlice) : ParserState :=
           | _ => return s.mkError pos s!"{tk} is not a constant or variable"
           { s with tokp := .math (arr.push tk) p }
     | .label pos lab =>
-      if tk.len == 2 && tk[0] == '$'.toUInt8 then
+      if h : tk.size = 2 then
+        have h0 : 0 < tk.size := by rw [h]; decide
+        have h1 : 1 < tk.size := by rw [h]; decide
         let go (s : ParserState) (k : TokensKind) :=
           { s with tokp := .math #[] ⟨k, pos, lab⟩ }
-        match tk[1].toChar with
+        if tk[0]'h0 == '$'.toUInt8 then
+          match (tk[1]'h1).toChar with
         | 'f' => go s .float
         | 'e' => go s .ess
         | 'a' => go s .ax
         | 'p' => go s .thm
         | _ => s.mkError pos s!"unknown statement type {(toLabel tk).2}"
+      else s.mkError pos s!"unknown statement type {(toLabel tk).2}"
       else s.mkError pos s!"unknown statement type {(toLabel tk).2}"
     | .proof pr =>
       let s := { s with tokp := default }
@@ -690,9 +690,9 @@ def feed (base : Nat) (arr : ByteArray)
         feed base arr (i+1) .ws s
       | .token ot =>
         let s := match ot with
-        | .this off => s.feedToken (base + off) ⟨arr, off, i - off⟩
+        | .this off => s.feedToken (base + off) (arr.toByteSlice off (off + (i - off)))
         | .old base off arr' => s.feedToken (base + off)
-          ⟨arr.copySlice 0 arr' arr'.size i false, off, arr'.size - off + i⟩
+          ((arr.copySlice 0 arr' arr'.size i false).toByteSlice off)
         let s : ParserState := s.updateLine (base + i) c
         if let some ⟨e, _⟩ := s.db.error? then
           { s with db := { s.db with error? := some ⟨e, i+1⟩ } }
