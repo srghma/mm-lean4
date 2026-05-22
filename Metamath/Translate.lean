@@ -7,7 +7,7 @@ namespace Metamath
 open Lean Elab
 open Verify in
 partial def foo : TermElabM Unit := do
-  let h ← IO.FS.Handle.mk "/home/mario/Documents/metamath/mm/iset.mm" IO.FS.Mode.read
+  let h ← IO.FS.Handle.mk "/home/srghma/Downloads/iset.mm" IO.FS.Mode.read
   let rec loop (s : ParserState) (base : Nat) : IO (Except ParserState DB) := do
     let buf ← h.read 1024
     if buf.isEmpty then
@@ -27,7 +27,13 @@ partial def foo : TermElabM Unit := do
       IO.println s!"at {pos}: {msg}"
     | _ => pure ()
 
--- #eval foo
+partial def fooTimed : TermElabM Unit := do
+  let start ← IO.monoMsNow
+  let _ ← foo
+  let stop ← IO.monoMsNow
+  IO.println s!"elapsed: {stop - start}ms"
+
+#eval fooTimed
 
 def CN := String
 instance : Inhabited CN := inferInstanceAs (Inhabited String)
